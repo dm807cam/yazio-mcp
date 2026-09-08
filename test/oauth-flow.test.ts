@@ -145,6 +145,24 @@ async function main(): Promise<void> {
     check('supports PKCE S256', asmDoc.code_challenge_methods_supported?.includes('S256') === true, asmDoc.code_challenge_methods_supported);
     check('offers dynamic client registration', Boolean(asmDoc.registration_endpoint), asmDoc.registration_endpoint);
 
+    // --- 2b. Access log fidelity ---
+    // Requests handled by a mounted router must log their real path. Express
+    // rewrites req.url during dispatch, so reading it late logs everything
+    // as "/", which is exactly what made the earlier misconfiguration opaque.
+    console.log('\n2b. Access log');
+    const logged: string[] = [];
+    const realLog = console.log;
+    console.log = (...args: unknown[]) => {
+      logged.push(args.join(' '));
+    };
+    await fetch(`${base}/.well-known/oauth-authorization-server`);
+    console.log = realLog;
+    check(
+      'router-handled requests log their real path',
+      logged.some(line => line.includes('/.well-known/oauth-authorization-server')),
+      logged
+    );
+
     // --- 3. Dynamic client registration ---
     console.log('\n3. Dynamic client registration');
     const redirectUri = 'http://127.0.0.1:9999/callback';

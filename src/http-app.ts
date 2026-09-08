@@ -47,11 +47,16 @@ export function createApp(options: AppOptions): Express {
   // credentials and tokens cannot leak into the journal.
   app.use((req: Request, res: Response, next) => {
     const startedAt = Date.now();
+    // Capture the path now, not on finish: Express rewrites req.url while a
+    // mounted router dispatches, so reading it later logged every OAuth
+    // endpoint as "/". originalUrl is never mutated. Strip the query string,
+    // which can carry authorization parameters.
+    const path = req.originalUrl.split('?')[0];
     res.on('finish', () => {
       const auth = req.headers.authorization ? ' auth' : '';
       const mcpSession = req.headers['mcp-session-id'] ? ' session' : '';
       console.log(
-        `${req.method} ${req.path} -> ${res.statusCode} (${Date.now() - startedAt}ms)${auth}${mcpSession}`
+        `${req.method} ${path} -> ${res.statusCode} (${Date.now() - startedAt}ms)${auth}${mcpSession}`
       );
     });
     next();
