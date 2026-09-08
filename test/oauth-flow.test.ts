@@ -9,7 +9,7 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -315,6 +315,80 @@ async function main(): Promise<void> {
       body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/list' })
     });
     check('invalid token is rejected with 401', badToken.status === 401, badToken.status);
+
+    // --- 6b. Hardening regressions ---
+    console.log('\n6b. Hardening');
+
+    // An unknown session id must be refused outright, not quietly given a fresh
+    // transport that no subsequent request can reach.
+    const unknownSession = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        Authorization: `Bearer ${tokens.access_token}`,
+        'mcp-session-id': '00000000-0000-4000-8000-000000000000'
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'tools/list' })
+    });
+    check('unknown session id returns 404', unknownSession.status === 404, unknownSession.status);
+
+    // Tokens must carry an audience even when the client omits `resource`,
+    // otherwise the RFC 8707 check in verifyAccessToken is skipped.
+    const thirdPage = await fetch(
+      `${base}/authorize?${new URLSearchParams({
+        client_id: client.client_id,
+        response_type: 'code',
+        redirect_uri: redirectUri,
+        code_challenge: challengeValue,
+        code_challenge_method: 'S256'
+      })}`
+    );
+    const thirdPending = (await thirdPage.text()).match(/name="pending" value="([^"]+)"/)?.[1] ?? '';
+    const thirdLogin = await fetch(`${base}/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ pending: thirdPending, password: PASSWORD }),
+      redirect: 'manual'
+    });
+    const codeNoResource = new URL(thirdLogin.headers.get('location') ?? '').searchParams.get('code') ?? '';
+    const tokenNoResource = await fetch(`${base}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code: codeNoResource,
+        client_id: client.client_id,
+        redirect_uri: redirectUri,
+        code_verifier: verifier
+      })
+    });
+    check('token issued without a resource parameter', tokenNoResource.status === 200, tokenNoResource.status);
+    const unboundToken = (await tokenNoResource.json()) as { access_token: string };
+    const stateOnDisk = JSON.parse(readFileSync(statePath, 'utf8')) as {
+      accessTokens: Record<string, { resource?: string }>;
+    };
+    check(
+      'that token is still audience-bound to this resource',
+      stateOnDisk.accessTokens[unboundToken.access_token]?.resource === `${base}/mcp`,
+      stateOnDisk.accessTokens[unboundToken.access_token]?.resource
+    );
+
+    // Brute-force protection on the one guessable secret this server exposes.
+    let sawThrottle = false;
+    for (let i = 0; i < 14; i++) {
+      const attempt = await fetch(`${base}/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ pending: 'nope', password: 'guess' }),
+        redirect: 'manual'
+      });
+      if (attempt.status === 429) {
+        sawThrottle = true;
+        break;
+      }
+    }
+    check('repeated login attempts are rate limited', sawThrottle);
 
     // --- 7. Refresh and revocation ---
     console.log('\n7. Refresh and revocation');

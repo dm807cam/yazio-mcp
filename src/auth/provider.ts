@@ -193,7 +193,11 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     return this.issueTokens(client.client_id, granted, resource?.href ?? record.resource);
   }
 
-  private issueTokens(clientId: string, scopes: string[], resource?: string): OAuthTokens {
+  private issueTokens(clientId: string, scopes: string[], requestedResource?: string): OAuthTokens {
+    // Always bind the token to this resource. Leaving it unset when a client
+    // omits the `resource` parameter would silently skip audience validation.
+    const resource = requestedResource ?? this.resourceUri;
+
     const accessToken = randomBytes(32).toString('base64url');
     const refreshToken = randomBytes(32).toString('base64url');
     const expiresAt = Math.floor(Date.now() / 1000) + ACCESS_TOKEN_TTL_SECONDS;

@@ -1,0 +1,52 @@
+[Unit]
+Description=Yazio MCP remote connector
+Documentation=https://github.com/fliptheweb/yazio-mcp
+After=network-online.target
+Wants=network-online.target
+# Bad Yazio credentials would otherwise restart-loop against their API forever.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=yazio-mcp
+Group=yazio-mcp
+WorkingDirectory=/opt/yazio-mcp
+EnvironmentFile=/etc/yazio-mcp/env
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=8787
+Environment=STATE_PATH=/var/lib/yazio-mcp/auth-state.json
+ExecStart=/usr/bin/node /opt/yazio-mcp/dist/http.js
+Restart=on-failure
+RestartSec=5
+
+# Writable state lives only here, created and owned by systemd.
+StateDirectory=yazio-mcp
+StateDirectoryMode=0700
+
+# Hardening. The service needs nothing but a loopback socket and its state dir.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+# V8 needs writable-executable pages for its JIT, so W^X cannot be enforced.
+MemoryDenyWriteExecute=false
+
+[Install]
+WantedBy=multi-user.target

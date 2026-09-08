@@ -43,8 +43,33 @@ export function createApp(options: AppOptions): Express {
   // Cloudflare Tunnel terminates TLS; trust its forwarding headers.
   app.set('trust proxy', 1);
 
+  // Throttle password attempts per source address. mcpAuthRouter rate-limits its
+  // own endpoints, but /login is ours, and it is the one place on this server
+  // where a secret can be guessed.
+  const attempts = new Map<string, { count: number; resetAt: number }>();
+  const MAX_ATTEMPTS = 10;
+  const ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
+
+  const tooManyAttempts = (ip: string): boolean => {
+    const now = Date.now();
+    const record = attempts.get(ip);
+
+    if (!record || record.resetAt < now) {
+      attempts.set(ip, { count: 1, resetAt: now + ATTEMPT_WINDOW_MS });
+      return false;
+    }
+
+    record.count += 1;
+    return record.count > MAX_ATTEMPTS;
+  };
+
   // Login form submission: the redirect half of the authorization flow.
   app.post('/login', express.urlencoded({ extended: false }), (req: Request, res: Response) => {
+    if (tooManyAttempts(req.ip ?? 'unknown')) {
+      res.status(429).type('text/plain').send('Too many attempts. Try again later.');
+      return;
+    }
+
     const pending = String(req.body?.pending ?? '');
     const password = String(req.body?.password ?? '');
     const clientName = provider.pendingClientName(pending);
@@ -92,9 +117,19 @@ export function createApp(options: AppOptions): Express {
   app.all('/mcp', bearerAuth, express.json({ limit: '4mb' }), async (req: Request, res: Response) => {
     try {
       const sessionId = req.headers['mcp-session-id'] as string | undefined;
-      const existing = sessionId ? transports.get(sessionId) : undefined;
 
-      if (existing) {
+      if (sessionId) {
+        const existing = transports.get(sessionId);
+        if (!existing) {
+          // Unknown session (typically ours restarted). Say so and stop: building
+          // a transport here would strand an McpServer that no request can reach.
+          res.status(404).json({
+            jsonrpc: '2.0',
+            error: { code: -32001, message: 'Session not found' },
+            id: null
+          });
+          return;
+        }
         await existing.handleRequest(req, res, req.body);
         return;
       }
