@@ -17,7 +17,8 @@
   "types": "dist/index.d.ts",
   "type": "module",
   "bin": {
-    "yazio-mcp": "dist/index.js"
+    "yazio-mcp": "dist/index.js",
+    "yazio-mcp-http": "dist/http.js"
   },
   "files": [
     "dist/**/*",
@@ -25,7 +26,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "rm -rf dist && tsc --emitDeclarationOnly && esbuild src/index.ts --bundle --platform=node --format=esm --packages=bundle --outfile=dist/index.js",
+    "build": "rm -rf dist && tsc --emitDeclarationOnly && node scripts/build.mjs",
     "pack:mcpb": "node scripts/pack-mcpb.cjs",
     "build:mcpb": "npm run build && npm run pack:mcpb",
     "build:mcpb:unpacked": "npm run build && node scripts/pack-mcpb.cjs --unpacked",
@@ -36,7 +37,9 @@
     "lint:fix": "eslint src/**/*.ts --fix",
     "format": "prettier --write src/**/*.ts",
     "type-check": "tsc --noEmit",
-    "version": "node scripts/bump-version.cjs && git add manifest.json server.json"
+    "version": "node scripts/bump-version.cjs && git add manifest.json server.json",
+    "start:http": "node dist/http.js",
+    "test": "tsx test/oauth-flow.test.ts"
   },
   "keywords": [
     "mcp",
@@ -50,15 +53,16 @@
   "engines": {
     "node": ">=18.0.0"
   },
-  "dependencies": {},
   "devDependencies": {
     "@anthropic-ai/mcpb": "^2.1.2",
     "@modelcontextprotocol/sdk": "^1.25.0",
+    "@types/express": "^5.0.6",
     "@types/node": "^20.0.0",
     "@typescript-eslint/eslint-plugin": "^8.44.1",
     "@typescript-eslint/parser": "^8.44.1",
     "esbuild": "^0.28.0",
     "eslint": "^9.36.0",
+    "express": "^5.2.1",
     "globals": "^16.4.0",
     "prettier": "^3.6.2",
     "tsx": "^4.0.0",
