@@ -17,7 +17,7 @@ WorkingDirectory=/opt/yazio-mcp
 Environment=NODE_ENV=production
 Environment=PUBLIC_URL=https://yazio-mcp.mayk.eu
 Environment=HOST=127.0.0.1
-Environment=PORT=8787
+Environment=PORT=8790
 Environment=STATE_PATH=/var/lib/yazio-mcp/auth-state.json
 
 ExecStart=/usr/bin/node /opt/yazio-mcp/dist/http.js

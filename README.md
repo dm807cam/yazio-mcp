@@ -126,7 +126,7 @@ ssh -t pi 'sudo bash ~/yazio-mcp-stage/setup-tunnel.sh <cloudflare-connector-tok
 
 `setup.sh` creates a dedicated `yazio-mcp` system account (no home, no shell), installs
 the bundle root-owned to `/opt/yazio-mcp`, and enables the service bound to
-`127.0.0.1:8787`. It takes no input and is safe to re-run for upgrades.
+`127.0.0.1:8790`. It takes no input and is safe to re-run for upgrades.
 `setup-tunnel.sh` installs `cloudflared` and registers a tunnel connector.
 
 Edit `PUBLIC_URL` in `deploy/yazio-mcp.service` before installing if your hostname

@@ -55,8 +55,8 @@ sleep 3
 
 if systemctl is-active --quiet yazio-mcp.service; then
   echo
-  echo "✅ yazio-mcp is running on 127.0.0.1:8787"
-  curl -fsS http://127.0.0.1:8787/healthz && echo
+  echo "✅ yazio-mcp is running on 127.0.0.1:8790"
+  curl -fsS http://127.0.0.1:8790/healthz && echo
 else
   echo
   echo "❌ Service failed to start. Recent log:" >&2

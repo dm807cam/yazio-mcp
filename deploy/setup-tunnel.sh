@@ -47,7 +47,7 @@ if systemctl is-active --quiet cloudflared; then
   echo "Now, in the Cloudflare Zero Trust dashboard, give this tunnel a"
   echo "Public Hostname if you have not already:"
   echo "    hostname: yazio-mcp.mayk.eu"
-  echo "    service:  HTTP  ->  localhost:8787"
+  echo "    service:  HTTP  ->  localhost:8790"
 else
   echo "❌ cloudflared failed to start:" >&2
   journalctl -u cloudflared -n 30 --no-pager >&2
