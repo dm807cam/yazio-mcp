@@ -104,6 +104,21 @@ async function main(): Promise<void> {
     const rootHtml = await root.text();
     check('root page names the /mcp endpoint', rootHtml.includes(`${base}/mcp`));
 
+    // A JSON-RPC call to the wrong path must name the right one, rather than
+    // Express's bare "Cannot POST /", which clients report as "server not found".
+    const wrongPath = await fetch(`${base}/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' })
+    });
+    check('POST to the wrong path returns 404 JSON-RPC', wrongPath.status === 404, wrongPath.status);
+    const wrongBody = (await wrongPath.json()) as { error?: { message?: string } };
+    check(
+      'that error names the real endpoint',
+      wrongBody.error?.message?.includes(`${base}/mcp`) === true,
+      wrongBody.error?.message
+    );
+
     // --- 2. Discovery documents ---
     console.log('\n2. Discovery metadata');
     const prm = await fetch(`${base}/.well-known/oauth-protected-resource/mcp`);

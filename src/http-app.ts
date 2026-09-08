@@ -41,6 +41,22 @@ export function createApp(options: AppOptions): Express {
   // Cloudflare Tunnel terminates TLS; trust its forwarding headers.
   app.set('trust proxy', 1);
 
+  // Concise access log. Without this a misconfigured client is undiagnosable:
+  // the failure is visible only to the client, which reports it vaguely.
+  // Deliberately records no bodies, query strings or header values, so
+  // credentials and tokens cannot leak into the journal.
+  app.use((req: Request, res: Response, next) => {
+    const startedAt = Date.now();
+    res.on('finish', () => {
+      const auth = req.headers.authorization ? ' auth' : '';
+      const mcpSession = req.headers['mcp-session-id'] ? ' session' : '';
+      console.log(
+        `${req.method} ${req.path} -> ${res.statusCode} (${Date.now() - startedAt}ms)${auth}${mcpSession}`
+      );
+    });
+    next();
+  });
+
   // Throttle sign-in attempts per source address. mcpAuthRouter rate-limits its
   // own endpoints, but /login is ours, and it is where credentials are guessed.
   const attempts = new Map<string, { count: number; resetAt: number }>();
@@ -200,6 +216,19 @@ export function createApp(options: AppOptions): Express {
         });
       }
     }
+  });
+
+  // Anything that looks like an MCP call to the wrong path gets a JSON-RPC error
+  // naming the right one, instead of Express's bare "Cannot POST /".
+  app.use((req: Request, res: Response) => {
+    res.status(404).json({
+      jsonrpc: '2.0',
+      error: {
+        code: -32601,
+        message: `No MCP endpoint at ${req.path}. This server's MCP endpoint is ${resourceUri}`
+      },
+      id: null
+    });
   });
 
   return app;
