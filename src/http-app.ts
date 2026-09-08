@@ -107,6 +107,30 @@ export function createApp(options: AppOptions): Express {
     res.json({ status: 'ok' });
   });
 
+  // A bare 404 at the root reads as "server is down" to anyone pasting the
+  // hostname into a connector dialog, when the real answer is that the endpoint
+  // lives at /mcp. Say so.
+  app.get('/', (_req: Request, res: Response) => {
+    res.type('html').send(`<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Yazio MCP</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+         display: grid; place-items: center; min-height: 100vh; margin: 0; }
+  main { max-width: 32rem; padding: 2rem; }
+  code { background: rgb(128 128 128 / .18); padding: .15em .4em; border-radius: 5px; }
+</style>
+<main>
+  <h1>Yazio MCP</h1>
+  <p>This is a Model Context Protocol server. It has no web interface.</p>
+  <p>Add it to your client using the endpoint <code>${resourceUri}</code> &mdash;
+     including the <code>/mcp</code> path.</p>
+</main>`);
+  });
+
   const bearerAuth = requireBearerAuth({
     verifier: provider,
     resourceMetadataUrl: `${publicUrl}/.well-known/oauth-protected-resource/mcp`

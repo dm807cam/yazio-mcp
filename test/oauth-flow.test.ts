@@ -97,6 +97,13 @@ async function main(): Promise<void> {
       challenge
     );
 
+    // The root previously 404'd, which reads as an outage to anyone pasting the
+    // bare hostname into a connector dialog.
+    const root = await fetch(`${base}/`);
+    check('root page explains where the endpoint is', root.status === 200, root.status);
+    const rootHtml = await root.text();
+    check('root page names the /mcp endpoint', rootHtml.includes(`${base}/mcp`));
+
     // --- 2. Discovery documents ---
     console.log('\n2. Discovery metadata');
     const prm = await fetch(`${base}/.well-known/oauth-protected-resource/mcp`);
