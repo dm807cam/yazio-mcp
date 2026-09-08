@@ -21,6 +21,9 @@ export default [
       '@typescript-eslint': tseslint,
     },
     rules: {
+      // The base rule cannot read TypeScript type positions and misreports
+      // parameter names in function types; the TS-aware rule replaces it.
+      'no-unused-vars': 'off',
       '@typescript-eslint/no-unused-vars': 'error',
       '@typescript-eslint/no-explicit-any': 'warn',
       '@typescript-eslint/explicit-function-return-type': 'off', // Too strict for this project

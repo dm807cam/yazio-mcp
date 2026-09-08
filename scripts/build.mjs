@@ -9,7 +9,7 @@ const banner = [
 ].join('\n');
 
 await build({
-  entryPoints: ['src/index.ts', 'src/http.ts', 'src/hash-password.ts'],
+  entryPoints: ['src/index.ts', 'src/http.ts'],
   bundle: true,
   platform: 'node',
   format: 'esm',

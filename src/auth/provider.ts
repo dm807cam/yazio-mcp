@@ -8,8 +8,8 @@ import type {
 import type { AuthorizationParams, OAuthServerProvider } from '@modelcontextprotocol/sdk/server/auth/provider.js';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { InvalidGrantError, InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
+import type { Yazio } from 'yazio';
 import { AuthStore } from './store.js';
-import { verifyPassword } from './password.js';
 import { renderLoginPage } from './login-page.js';
 
 const ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
@@ -28,51 +28,60 @@ interface CodeRecord {
   redirectUri: string;
   scopes: string[];
   resource?: string;
+  sessionId: string;
   expiresAt: number;
+}
+
+export interface YazioSession {
+  client: Yazio;
+  username: string;
 }
 
 export interface ProviderOptions {
   store: AuthStore;
   /** Canonical resource URI of this MCP server, e.g. https://host/mcp */
   resourceUri: string;
-  /** OAuth issuer identifier, e.g. https://host */
+  /** OAuth issuer identifier, exactly as published in metadata. */
   issuer: string;
-  /** scrypt hash produced by hashPassword(). */
-  passwordHash: string;
+  /** Sign in to Yazio. Rejects if the credentials are refused. */
+  authenticate: (username: string, password: string) => Promise<Yazio>;
 }
 
 /**
- * Single-user OAuth 2.1 authorization server.
+ * OAuth 2.1 authorization server whose identity provider is Yazio itself.
  *
- * The protocol surface (/authorize, /token, /register, /revoke, metadata) is
- * provided by the SDK's mcpAuthRouter; this class supplies the decisions:
- * who may log in, what codes and tokens mean, and how they are validated.
+ * The user signs in with their Yazio credentials on the consent screen; those
+ * credentials are exchanged for a Yazio session held in memory and are never
+ * persisted. An access token is a handle to that session, so the server holds
+ * no long-lived Yazio secret at rest.
  *
- * Authorization codes and pending logins are deliberately in-memory only —
- * both are short-lived, and losing them across a restart costs the user one
- * retry rather than a broken connector.
+ * Consequence: sessions do not survive a restart. Issued tokens then fail
+ * verification with invalid_token, which is the signal for the client to run
+ * the authorization flow again.
  */
-export class SingleUserOAuthProvider implements OAuthServerProvider {
+export class YazioOAuthProvider implements OAuthServerProvider {
   private readonly store: AuthStore;
   private readonly resourceUri: string;
   private readonly issuer: string;
-  private readonly passwordHash: string;
+  private readonly authenticate: (username: string, password: string) => Promise<Yazio>;
 
   private readonly pendingLogins = new Map<string, PendingLogin>();
   private readonly codes = new Map<string, CodeRecord>();
+  /** Live Yazio sessions, keyed by an opaque id referenced from token records. */
+  private readonly sessions = new Map<string, YazioSession>();
 
   constructor(options: ProviderOptions) {
     this.store = options.store;
     this.resourceUri = options.resourceUri;
     this.issuer = options.issuer;
-    this.passwordHash = options.passwordHash;
+    this.authenticate = options.authenticate;
   }
 
   get clientsStore(): AuthStore {
     return this.store;
   }
 
-  /** Render the consent/login screen. The redirect happens later, in completeLogin. */
+  /** Render the sign-in screen. The redirect happens later, in completeLogin. */
   async authorize(client: OAuthClientInformationFull, params: AuthorizationParams, res: Response): Promise<void> {
     this.sweep();
 
@@ -94,22 +103,37 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
   }
 
   /**
-   * Handle the login form submission. Returns the URL to redirect the browser to,
-   * or an error to re-render the form with.
+   * Verify Yazio credentials and, on success, mint an authorization code.
+   * Returns the URL to redirect the browser to, or an error to re-render with.
    */
-  completeLogin(pendingId: string, password: string): { redirectTo: string } | { error: string } {
+  async completeLogin(
+    pendingId: string,
+    username: string,
+    password: string
+  ): Promise<{ redirectTo: string } | { error: string }> {
     this.sweep();
 
     const pending = this.pendingLogins.get(pendingId);
     if (!pending) {
-      return { error: 'This login request expired. Start the connection again from your client.' };
+      return { error: 'This sign-in request expired. Start the connection again from your client.' };
     }
 
-    if (!verifyPassword(password, this.passwordHash)) {
-      return { error: 'Incorrect password.' };
+    if (!username || !password) {
+      return { error: 'Enter your Yazio email and password.' };
+    }
+
+    let yazioClient: Yazio;
+    try {
+      yazioClient = await this.authenticate(username, password);
+    } catch {
+      // Deliberately vague: do not reveal whether the account exists.
+      return { error: 'Yazio rejected those credentials.' };
     }
 
     this.pendingLogins.delete(pendingId);
+
+    const sessionId = randomUUID();
+    this.sessions.set(sessionId, { client: yazioClient, username });
 
     const code = randomBytes(32).toString('base64url');
     this.codes.set(code, {
@@ -118,6 +142,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
       redirectUri: pending.params.redirectUri,
       scopes: pending.params.scopes ?? [],
       resource: pending.params.resource?.href,
+      sessionId,
       expiresAt: Date.now() + AUTHORIZATION_CODE_TTL_MS
     });
 
@@ -126,19 +151,28 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     if (pending.params.state !== undefined) {
       redirectTo.searchParams.set('state', pending.params.state);
     }
-    // RFC 9207: let the client confirm which AS answered.
+    // RFC 9207: let the client confirm which authorization server answered.
     redirectTo.searchParams.set('iss', this.issuer);
 
     return { redirectTo: redirectTo.href };
   }
 
-  /** Look up the pending login so a failed attempt can be re-rendered. */
+  /** Look up a pending login so a failed attempt can be re-rendered in context. */
   pendingClientName(pendingId: string): string | undefined {
     const pending = this.pendingLogins.get(pendingId);
     if (!pending) {
       return undefined;
     }
     return pending.client.client_name ?? pending.client.client_id;
+  }
+
+  /** The Yazio session behind a verified access token, if it is still live. */
+  sessionForToken(auth: AuthInfo): YazioSession | undefined {
+    const sessionId = auth.extra?.sessionId;
+    if (typeof sessionId !== 'string') {
+      return undefined;
+    }
+    return this.sessions.get(sessionId);
   }
 
   async challengeForAuthorizationCode(
@@ -164,15 +198,20 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
       throw new InvalidGrantError('Invalid or expired authorization code');
     }
 
-    // Single use, regardless of what happens below.
+    // Single use, whatever happens below.
     this.codes.delete(authorizationCode);
 
     if (redirectUri !== undefined && redirectUri !== record.redirectUri) {
       throw new InvalidGrantError('redirect_uri does not match the authorization request');
     }
 
-    // PKCE itself is verified by the SDK token handler via challengeForAuthorizationCode.
-    return this.issueTokens(client.client_id, record.scopes, resource?.href ?? record.resource);
+    // PKCE is verified by the SDK token handler via challengeForAuthorizationCode.
+    return this.issueTokens(
+      client.client_id,
+      record.scopes,
+      record.sessionId,
+      resource?.href ?? record.resource
+    );
   }
 
   async exchangeRefreshToken(
@@ -189,11 +228,21 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     // Rotate: a refresh token is never valid twice.
     this.store.deleteRefreshToken(refreshToken);
 
+    if (!record.sessionId || !this.sessions.has(record.sessionId)) {
+      // The Yazio session is gone (restart, or revoked). Force a fresh sign-in.
+      throw new InvalidGrantError('Session expired, please sign in again');
+    }
+
     const granted = scopes && scopes.length > 0 ? scopes : record.scopes;
-    return this.issueTokens(client.client_id, granted, resource?.href ?? record.resource);
+    return this.issueTokens(client.client_id, granted, record.sessionId, resource?.href ?? record.resource);
   }
 
-  private issueTokens(clientId: string, scopes: string[], requestedResource?: string): OAuthTokens {
+  private issueTokens(
+    clientId: string,
+    scopes: string[],
+    sessionId: string,
+    requestedResource?: string
+  ): OAuthTokens {
     // Always bind the token to this resource. Leaving it unset when a client
     // omits the `resource` parameter would silently skip audience validation.
     const resource = requestedResource ?? this.resourceUri;
@@ -202,8 +251,8 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     const refreshToken = randomBytes(32).toString('base64url');
     const expiresAt = Math.floor(Date.now() / 1000) + ACCESS_TOKEN_TTL_SECONDS;
 
-    this.store.saveAccessToken(accessToken, { clientId, scopes, resource, expiresAt });
-    this.store.saveRefreshToken(refreshToken, { clientId, scopes, resource });
+    this.store.saveAccessToken(accessToken, { clientId, scopes, resource, sessionId, expiresAt });
+    this.store.saveRefreshToken(refreshToken, { clientId, scopes, resource, sessionId });
 
     return {
       access_token: accessToken,
@@ -230,12 +279,19 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
       throw new InvalidTokenError('Access token was not issued for this resource');
     }
 
+    if (!record.sessionId || !this.sessions.has(record.sessionId)) {
+      // Tokens outlive Yazio sessions across a restart. Reporting invalid_token
+      // is what prompts the client to run the authorization flow again.
+      throw new InvalidTokenError('Session expired, please sign in again');
+    }
+
     return {
       token,
       clientId: record.clientId,
       scopes: record.scopes,
       expiresAt: record.expiresAt,
-      resource: new URL(this.resourceUri)
+      resource: new URL(this.resourceUri),
+      extra: { sessionId: record.sessionId }
     };
   }
 

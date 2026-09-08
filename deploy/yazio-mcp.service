@@ -1,9 +1,8 @@
 [Unit]
 Description=Yazio MCP remote connector
-Documentation=https://github.com/fliptheweb/yazio-mcp
+Documentation=https://github.com/dm807cam/yazio-mcp
 After=network-online.target
 Wants=network-online.target
-# Bad Yazio credentials would otherwise restart-loop against their API forever.
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
@@ -12,11 +11,15 @@ Type=simple
 User=yazio-mcp
 Group=yazio-mcp
 WorkingDirectory=/opt/yazio-mcp
-EnvironmentFile=/etc/yazio-mcp/env
+
+# No secrets here: users sign in to Yazio through the browser during the OAuth
+# flow, and their session is held in memory only.
 Environment=NODE_ENV=production
+Environment=PUBLIC_URL=https://yazio-mcp.mayk.eu
 Environment=HOST=127.0.0.1
 Environment=PORT=8787
 Environment=STATE_PATH=/var/lib/yazio-mcp/auth-state.json
+
 ExecStart=/usr/bin/node /opt/yazio-mcp/dist/http.js
 Restart=on-failure
 RestartSec=5

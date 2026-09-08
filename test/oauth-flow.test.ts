@@ -15,9 +15,9 @@ import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import type { Yazio } from 'yazio';
 import { createApp } from '../src/http-app.js';
-import { hashPassword } from '../src/auth/password.js';
 
-const PASSWORD = 'test-password-123';
+const YAZIO_USER = 'test@example.com';
+const YAZIO_PASSWORD = 'test-password-123';
 
 let passed = 0;
 let failed = 0;
@@ -39,10 +39,18 @@ function check(name: string, condition: boolean, detail?: unknown): void {
 function stubYazioClient(): Yazio {
   return {
     user: {
-      get: async () => ({ first_name: 'Test', email: 'test@example.com' })
+      get: async () => ({ first_name: 'Test', email: YAZIO_USER })
     },
     products: {}
   } as unknown as Yazio;
+}
+
+/** Stand-in for Yazio sign-in: accepts exactly one credential pair. */
+async function stubAuthenticate(username: string, password: string): Promise<Yazio> {
+  if (username !== YAZIO_USER || password !== YAZIO_PASSWORD) {
+    throw new Error('invalid credentials');
+  }
+  return stubYazioClient();
 }
 
 async function main(): Promise<void> {
@@ -50,11 +58,10 @@ async function main(): Promise<void> {
   const statePath = join(stateDir, 'auth-state.json');
 
   const app = createApp({
-    yazioClient: stubYazioClient(),
     // Rewritten to the real port once listening; discovery URLs use this origin.
     publicUrl: 'http://127.0.0.1:0',
-    passwordHash: hashPassword(PASSWORD),
-    statePath
+    statePath,
+    authenticate: stubAuthenticate
   });
 
   // Listen first so we know the port, then rebuild with the correct public URL.
@@ -66,10 +73,9 @@ async function main(): Promise<void> {
 
   const base = `http://127.0.0.1:${port}`;
   const realApp = createApp({
-    yazioClient: stubYazioClient(),
     publicUrl: base,
-    passwordHash: hashPassword(PASSWORD),
-    statePath
+    statePath,
+    authenticate: stubAuthenticate
   });
   const server = realApp.listen(port, '127.0.0.1');
   await new Promise(resolve => server.once('listening', resolve));
@@ -161,18 +167,18 @@ async function main(): Promise<void> {
     const badLogin = await fetch(`${base}/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ pending, password: 'wrong' }),
+      body: new URLSearchParams({ pending, username: YAZIO_USER, password: 'wrong' }),
       redirect: 'manual'
     });
-    check('wrong password is rejected with 401', badLogin.status === 401, badLogin.status);
+    check('wrong Yazio password is rejected with 401', badLogin.status === 401, badLogin.status);
 
     const login = await fetch(`${base}/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ pending, password: PASSWORD }),
+      body: new URLSearchParams({ pending, username: YAZIO_USER, password: YAZIO_PASSWORD }),
       redirect: 'manual'
     });
-    check('correct password redirects', login.status === 302, login.status);
+    check('correct Yazio credentials redirect', login.status === 302, login.status);
     const location = new URL(login.headers.get('location') ?? '');
     check('redirects to the registered redirect_uri', location.origin + location.pathname === redirectUri, location.href);
     check('returns state unchanged', location.searchParams.get('state') === state);
@@ -207,7 +213,7 @@ async function main(): Promise<void> {
     const secondLogin = await fetch(`${base}/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ pending: secondPending, password: PASSWORD }),
+      body: new URLSearchParams({ pending: secondPending, username: YAZIO_USER, password: YAZIO_PASSWORD }),
       redirect: 'manual'
     });
     const freshCode = new URL(secondLogin.headers.get('location') ?? '').searchParams.get('code') ?? '';
@@ -348,7 +354,7 @@ async function main(): Promise<void> {
     const thirdLogin = await fetch(`${base}/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ pending: thirdPending, password: PASSWORD }),
+      body: new URLSearchParams({ pending: thirdPending, username: YAZIO_USER, password: YAZIO_PASSWORD }),
       redirect: 'manual'
     });
     const codeNoResource = new URL(thirdLogin.headers.get('location') ?? '').searchParams.get('code') ?? '';
@@ -380,7 +386,7 @@ async function main(): Promise<void> {
       const attempt = await fetch(`${base}/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ pending: 'nope', password: 'guess' }),
+        body: new URLSearchParams({ pending: 'nope', username: YAZIO_USER, password: 'guess' }),
         redirect: 'manual'
       });
       if (attempt.status === 429) {
@@ -389,6 +395,11 @@ async function main(): Promise<void> {
       }
     }
     check('repeated login attempts are rate limited', sawThrottle);
+
+    // The whole point of signing in at connect time: no Yazio secret on disk.
+    const rawState = readFileSync(statePath, 'utf8');
+    check('Yazio password never reaches the state file', !rawState.includes(YAZIO_PASSWORD));
+    check('Yazio username never reaches the state file', !rawState.includes(YAZIO_USER));
 
     // --- 7. Refresh and revocation ---
     console.log('\n7. Refresh and revocation');
@@ -418,13 +429,12 @@ async function main(): Promise<void> {
     });
     check('old refresh token is rotated out', reused.status >= 400, reused.status);
 
-    // --- 8. Persistence across restart ---
-    console.log('\n8. Persistence across restart');
+    // --- 8. Restart behaviour ---
+    console.log('\n8. Restart behaviour');
     const restarted = createApp({
-      yazioClient: stubYazioClient(),
       publicUrl: base,
-      passwordHash: hashPassword(PASSWORD),
-      statePath
+      statePath,
+      authenticate: stubAuthenticate
     });
     server.closeAllConnections();
     await new Promise<void>(resolve => {
@@ -437,6 +447,8 @@ async function main(): Promise<void> {
     const base2 = `http://127.0.0.1:${(server2.address() as AddressInfo).port}`;
 
     try {
+      // Yazio sessions live in memory only, so a restart must invalidate tokens
+      // rather than silently serving a session that no longer exists.
       const afterRestart = await fetch(`${base2}/mcp`, {
         method: 'POST',
         headers: {
@@ -455,9 +467,14 @@ async function main(): Promise<void> {
           }
         })
       });
-      check('access token still valid after restart', afterRestart.status === 200, afterRestart.status);
-      await afterRestart.text();
+      check('token is rejected after restart (no Yazio secret at rest)', afterRestart.status === 401, afterRestart.status);
+      check(
+        'rejection points the client back at re-authorization',
+        (afterRestart.headers.get('www-authenticate') ?? '').includes('resource_metadata='),
+        afterRestart.headers.get('www-authenticate')
+      );
 
+      // Client registrations DO persist, so the client need not re-register.
       const clientAfter = await fetch(`${base2}/authorize?${new URLSearchParams({
         client_id: client.client_id,
         response_type: 'code',
@@ -467,6 +484,16 @@ async function main(): Promise<void> {
         resource: `${base}/mcp`
       })}`);
       check('client registration survived restart', clientAfter.status === 200, clientAfter.status);
+
+      // And a fresh sign-in on the restarted server works.
+      const rePending = (await clientAfter.text()).match(/name="pending" value="([^"]+)"/)?.[1] ?? '';
+      const reLogin = await fetch(`${base2}/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ pending: rePending, username: YAZIO_USER, password: YAZIO_PASSWORD }),
+        redirect: 'manual'
+      });
+      check('can sign in again after restart', reLogin.status === 302, reLogin.status);
     } finally {
       await new Promise<void>(resolve => {
         server2.close(() => resolve());

@@ -73,44 +73,46 @@ OAuth 2.1, so it can be added as a custom connector in a cloud client such as Cl
 
 ```bash
 npm run build
-PUBLIC_URL=https://yazio-mcp.example.com \
-YAZIO_USERNAME=you@example.com \
-YAZIO_PASSWORD=... \
-MCP_PASSWORD_HASH="$(printf 'your-connector-password' | node dist/hash-password.js)" \
-STATE_PATH=./auth-state.json \
-node dist/http.js
+PUBLIC_URL=https://yazio-mcp.example.com STATE_PATH=./auth-state.json node dist/http.js
 ```
 
 The MCP endpoint is then `PUBLIC_URL/mcp`.
+
+Note there are **no Yazio credentials in the server configuration**. Each user signs in
+to Yazio in their browser as part of the OAuth flow, so the server holds no account
+secret at rest and different people can connect to their own Yazio accounts.
 
 ### Configuration
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `YAZIO_USERNAME` / `YAZIO_PASSWORD` | yes | — | Yazio account this server acts as |
 | `PUBLIC_URL` | yes | — | Public origin, e.g. `https://yazio-mcp.example.com`. Becomes the OAuth issuer and the canonical resource URI |
-| `MCP_PASSWORD_HASH` | yes | — | scrypt hash of the connector password, from `dist/hash-password.js` |
-| `STATE_PATH` | no | `/var/lib/yazio-mcp/auth-state.json` | Where client registrations and tokens persist |
+| `STATE_PATH` | no | `/var/lib/yazio-mcp/auth-state.json` | Where client registrations and token metadata persist |
 | `HOST` / `PORT` | no | `127.0.0.1` / `8787` | Listen address |
+
+`YAZIO_USERNAME` and `YAZIO_PASSWORD` apply to **stdio mode only**.
 
 ### Authorization
 
-The server is both OAuth resource server and authorization server on one hostname:
+The server is both OAuth resource server and authorization server on one hostname, with
+Yazio itself as the identity provider:
 
 - OAuth 2.1 with PKCE (S256) and dynamic client registration (RFC 7591)
 - Discovery via `/.well-known/oauth-protected-resource/mcp` (RFC 9728) and
   `/.well-known/oauth-authorization-server` (RFC 8414)
-- Access tokens are audience-bound to `PUBLIC_URL/mcp` (RFC 8707); refresh tokens rotate
-- A single connector password guards the consent screen, verified against a scrypt hash
+- The consent screen collects Yazio credentials, exchanges them for a Yazio session held
+  **in memory**, and discards them. Nothing is written to disk.
+- Access tokens are handles to that session, audience-bound to `PUBLIC_URL/mcp`
+  (RFC 8707). Refresh tokens rotate on use.
 
-`STATE_PATH` must be on persistent storage. Client registrations and refresh tokens live
-there, and losing them makes an already-saved connector fail to reconnect.
+Because sessions are memory-only, **a restart signs everyone out**: tokens then fail with
+`invalid_token`, which is the standard signal for the client to re-run the authorization
+flow. Client registrations do persist in `STATE_PATH`, so clients need not re-register.
 
 > [!WARNING]
 > `PUBLIC_URL` must be HTTPS, terminated by something in front of this process
 > (Cloudflare Tunnel, Caddy, nginx). The server speaks plain HTTP and should bind to
-> loopback only. Anyone with the connector password gets read **and write** access to
-> your food diary, so choose a long one.
+> loopback only. Anyone who signs in gets read **and write** access to that Yazio diary.
 
 ### Deploying on a Raspberry Pi
 
@@ -123,9 +125,12 @@ ssh -t pi 'sudo bash ~/yazio-mcp-stage/setup-tunnel.sh <cloudflare-connector-tok
 ```
 
 `setup.sh` creates a dedicated `yazio-mcp` system account (no home, no shell), installs
-the bundle root-owned to `/opt/yazio-mcp`, prompts for the secrets and writes them to
-`/etc/yazio-mcp/env` (mode 0640), and enables the service bound to `127.0.0.1:8787`.
+the bundle root-owned to `/opt/yazio-mcp`, and enables the service bound to
+`127.0.0.1:8787`. It takes no input and is safe to re-run for upgrades.
 `setup-tunnel.sh` installs `cloudflared` and registers a tunnel connector.
+
+Edit `PUBLIC_URL` in `deploy/yazio-mcp.service` before installing if your hostname
+differs.
 
 ## 💡 Use Cases
 

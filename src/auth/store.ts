@@ -8,6 +8,8 @@ export interface TokenRecord {
   clientId: string;
   scopes: string[];
   resource?: string;
+  /** Opaque id of the in-memory Yazio session this token stands for. */
+  sessionId?: string;
   /** Seconds since epoch. */
   expiresAt?: number;
 }

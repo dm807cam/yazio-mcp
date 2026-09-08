@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Install the Yazio MCP remote connector as a hardened systemd service.
-# Run as root:  sudo bash setup.sh
+#
+#   sudo bash setup.sh
+#
+# Non-interactive and idempotent: there are no secrets to configure, because
+# users sign in to Yazio in the browser when they connect a client.
 set -euo pipefail
 
 APP_USER=yazio-mcp
 APP_DIR=/opt/yazio-mcp
-ETC_DIR=/etc/yazio-mcp
 STAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PUBLIC_URL="https://yazio-mcp.mayk.eu"
 
 if [[ $EUID -ne 0 ]]; then
   echo "Run this with sudo." >&2
@@ -33,47 +35,13 @@ cp "$STAGE_DIR/package.json" "$APP_DIR/package.json"
 chown -R root:root "$APP_DIR"
 chmod -R go-w "$APP_DIR"
 
-echo "==> Configuring secrets in $ETC_DIR/env"
-install -d -o root -g "$APP_USER" -m 0750 "$ETC_DIR"
-
-if [[ -f "$ETC_DIR/env" ]]; then
-  echo "    $ETC_DIR/env already exists — keeping it."
-  echo "    Delete it and re-run this script to change credentials."
-else
-  echo
-  echo "    Yazio account (this server logs in as you; there is no Yazio OAuth)."
-  read -r -p "    Yazio email: " YAZIO_USERNAME
-  read -r -s -p "    Yazio password: " YAZIO_PASSWORD; echo
-  echo
-  echo "    Connector password. You will type this on the sign-in page when"
-  echo "    adding the connector in Claude. Only its scrypt hash is stored."
-  read -r -s -p "    Connector password: " MCP_PASSWORD; echo
-  read -r -s -p "    Confirm: " MCP_PASSWORD_CONFIRM; echo
-
-  if [[ "$MCP_PASSWORD" != "$MCP_PASSWORD_CONFIRM" ]]; then
-    echo "    Passwords do not match." >&2
-    exit 1
-  fi
-  if [[ ${#MCP_PASSWORD} -lt 12 ]]; then
-    echo "    Use at least 12 characters — this endpoint is on the public internet." >&2
-    exit 1
-  fi
-
-  MCP_PASSWORD_HASH="$(printf '%s' "$MCP_PASSWORD" | /usr/bin/node "$APP_DIR/dist/hash-password.js")"
-
-  umask 077
-  cat > "$ETC_DIR/env" <<ENVEOF
-# Yazio MCP connector configuration. Contains secrets; keep mode 0640.
-PUBLIC_URL=$PUBLIC_URL
-YAZIO_USERNAME=$YAZIO_USERNAME
-YAZIO_PASSWORD=$YAZIO_PASSWORD
-MCP_PASSWORD_HASH=$MCP_PASSWORD_HASH
-ENVEOF
-  unset MCP_PASSWORD MCP_PASSWORD_CONFIRM YAZIO_PASSWORD
+# Older revisions of this project kept Yazio credentials here. Nothing reads it
+# now, so remove it rather than leaving a stale secret on disk.
+if [[ -f /etc/yazio-mcp/env ]]; then
+  echo "==> Removing obsolete /etc/yazio-mcp/env (credentials are no longer stored)"
+  shred -u /etc/yazio-mcp/env 2>/dev/null || rm -f /etc/yazio-mcp/env
+  rmdir /etc/yazio-mcp 2>/dev/null || true
 fi
-
-chown root:"$APP_USER" "$ETC_DIR/env"
-chmod 0640 "$ETC_DIR/env"
 
 echo "==> Installing systemd unit"
 cp "$STAGE_DIR/yazio-mcp.service" /etc/systemd/system/yazio-mcp.service

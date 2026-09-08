@@ -6,18 +6,16 @@ import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middlew
 import type { Yazio } from 'yazio';
 import { YazioMcpServer } from './server.js';
 import { AuthStore } from './auth/store.js';
-import { SingleUserOAuthProvider } from './auth/provider.js';
+import { YazioOAuthProvider } from './auth/provider.js';
 import { renderLoginPage } from './auth/login-page.js';
 
 export interface AppOptions {
-  /** Authenticated Yazio client, shared across sessions (one account per server). */
-  yazioClient: Yazio;
   /** Public origin, e.g. https://yazio-mcp.example.com — no trailing slash. */
   publicUrl: string;
-  /** scrypt hash of the connector password. */
-  passwordHash: string;
-  /** Where client registrations and tokens are persisted. */
+  /** Where client registrations and token metadata are persisted. */
   statePath: string;
+  /** Sign in to Yazio. Injected so tests can run without the real API. */
+  authenticate: (username: string, password: string) => Promise<Yazio>;
 }
 
 export function createApp(options: AppOptions): Express {
@@ -31,11 +29,11 @@ export function createApp(options: AppOptions): Express {
   const resourceUri = `${publicUrl}/mcp`;
 
   const store = new AuthStore(options.statePath);
-  const provider = new SingleUserOAuthProvider({
+  const provider = new YazioOAuthProvider({
     store,
     resourceUri,
     issuer,
-    passwordHash: options.passwordHash
+    authenticate: options.authenticate
   });
 
   const app = express();
@@ -43,9 +41,8 @@ export function createApp(options: AppOptions): Express {
   // Cloudflare Tunnel terminates TLS; trust its forwarding headers.
   app.set('trust proxy', 1);
 
-  // Throttle password attempts per source address. mcpAuthRouter rate-limits its
-  // own endpoints, but /login is ours, and it is the one place on this server
-  // where a secret can be guessed.
+  // Throttle sign-in attempts per source address. mcpAuthRouter rate-limits its
+  // own endpoints, but /login is ours, and it is where credentials are guessed.
   const attempts = new Map<string, { count: number; resetAt: number }>();
   const MAX_ATTEMPTS = 10;
   const ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
@@ -63,18 +60,20 @@ export function createApp(options: AppOptions): Express {
     return record.count > MAX_ATTEMPTS;
   };
 
-  // Login form submission: the redirect half of the authorization flow.
-  app.post('/login', express.urlencoded({ extended: false }), (req: Request, res: Response) => {
+  // Sign-in form submission: the redirect half of the authorization flow.
+  app.post('/login', express.urlencoded({ extended: false }), async (req: Request, res: Response) => {
     if (tooManyAttempts(req.ip ?? 'unknown')) {
       res.status(429).type('text/plain').send('Too many attempts. Try again later.');
       return;
     }
 
     const pending = String(req.body?.pending ?? '');
+    const username = String(req.body?.username ?? '');
     const password = String(req.body?.password ?? '');
+    // Read before completeLogin, which consumes the pending record on success.
     const clientName = provider.pendingClientName(pending);
 
-    const result = provider.completeLogin(pending, password);
+    const result = await provider.completeLogin(pending, username, password);
 
     if ('redirectTo' in result) {
       res.redirect(302, result.redirectTo);
@@ -87,6 +86,7 @@ export function createApp(options: AppOptions): Express {
         action: '/login',
         hidden: clientName ? { pending } : {},
         clientName: clientName ?? 'Unknown client',
+        username,
         error: result.error
       })
     );
@@ -134,7 +134,18 @@ export function createApp(options: AppOptions): Express {
         return;
       }
 
-      // New session: one McpServer per session, sharing the single Yazio client.
+      // New transport. Each one is bound to the Yazio session behind the token
+      // that opened it, so two people connecting reach their own accounts.
+      const yazioSession = req.auth ? provider.sessionForToken(req.auth) : undefined;
+      if (!yazioSession) {
+        res.status(401).json({
+          jsonrpc: '2.0',
+          error: { code: -32001, message: 'Session expired, please sign in again' },
+          id: null
+        });
+        return;
+      }
+
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (id: string) => {
@@ -151,7 +162,7 @@ export function createApp(options: AppOptions): Express {
         }
       };
 
-      const mcp = new YazioMcpServer(options.yazioClient);
+      const mcp = new YazioMcpServer(yazioSession.client);
       await mcp.mcpServer.connect(transport);
 
       await transport.handleRequest(req, res, req.body);
