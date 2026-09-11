@@ -17,6 +17,7 @@ import {
   GetUserSettingsInputSchema,
   GetUserSuggestedProductsInputSchema,
   AddConsumedItemInputSchema,
+  AddConsumedItemsInputSchema,
   RemoveConsumedItemInputSchema,
   AddWaterIntakeInputSchema,
   GetDietaryPreferencesInputSchema,
@@ -29,6 +30,7 @@ import {
   type GetUserExercisesInput,
   type GetUserSuggestedProductsInput,
   type AddConsumedItemInput,
+  type AddConsumedItemsInput,
   type RemoveConsumedItemInput,
   type AddWaterIntakeInput,
 } from './schemas.js';
@@ -38,6 +40,19 @@ import type {
   YazioAddWaterIntakeOptions
 } from './types.js';
 import { createYazioClient, type YazioCredentials } from './yazio-client.js';
+
+/**
+ * Sent to the client at connect time; Claude and most other clients put it in
+ * the model's system prompt. Logging a meal spans search and add, so the rule
+ * lives here rather than in any single tool description.
+ */
+const INSTRUCTIONS = `Reads and writes the user's Yazio food diary.
+
+Log food the way the user reads it in the Yazio app: one diary entry per food. A meal logged as a single combined product hides what they ate and cannot be adjusted item by item later.
+- When the user lists several foods ("1 slice of bread, 1 tbsp butter and 1 slice of gouda"), that is several entries: bread, butter and gouda.
+- Search for each food on its own (search_products "gouda", not "bread with butter and gouda"). The database also contains combined dishes such as "cheese bread"; do not use one for foods the user listed separately.
+- Log the foods together with add_user_consumed_items, one item per food, each with its own amount.
+- A single entry is right for a single product: a branded protein bar, a ready meal, or a dish the user named as a whole.`;
 
 /**
  * Transport-agnostic Yazio MCP server. Construct with an already-authenticated
@@ -50,10 +65,13 @@ export class YazioMcpServer {
 
   constructor(client: Yazio) {
     this.yazioClient = client;
-    this.server = new McpServer({
-      name: 'yazio-mcp',
-      version,
-    });
+    this.server = new McpServer(
+      {
+        name: 'yazio-mcp',
+        version,
+      },
+      { instructions: INSTRUCTIONS }
+    );
 
     this.setupToolHandlers();
     this.setupPromptHandlers();
@@ -227,7 +245,7 @@ export class YazioMcpServer {
     this.server.registerTool(
       'search_products',
       {
-        description: 'Search for food products in Yazio database. You can optionally specify user\'s sex, country and locale of the products to search for.',
+        description: 'Search for food products in Yazio database. You can optionally specify user\'s sex, country and locale of the products to search for. Search one food at a time ("gouda", not "bread with butter and gouda"): the database also holds combined dishes, and logging one of those hides the individual foods.',
         inputSchema: SearchProductsInputSchema,
         // outputSchema: SearchProductsOutputSchema,
         annotations: {
@@ -260,7 +278,7 @@ export class YazioMcpServer {
     this.server.registerTool(
       'add_user_consumed_item',
       {
-        description: 'Add a food item to user consumption log',
+        description: 'Add one product to the user\'s food diary as a single entry. For a meal of several foods, log each food as its own entry with add_user_consumed_items instead of picking one combined product.',
         inputSchema: AddConsumedItemInputSchema,
         annotations: {
           readOnlyHint: false,
@@ -269,6 +287,21 @@ export class YazioMcpServer {
       },
       async (args: AddConsumedItemInput) => {
         return await this.addUserConsumedItem(args);
+      }
+    );
+
+    this.server.registerTool(
+      'add_user_consumed_items',
+      {
+        description: 'Log a meal of several foods. Each item becomes its own entry in the user\'s Yazio diary, so every food stays visible and adjustable in the app. Use one item per food the user mentions ("1 slice of bread, 1 tbsp butter and 1 slice of gouda" is three items), each with its own product_id from search_products. Returns the id of every entry created. If some items fail, the call is marked as an error and lists them under "failed"; the rest were saved, so do not resend those.',
+        inputSchema: AddConsumedItemsInputSchema,
+        annotations: {
+          readOnlyHint: false,
+          idempotentHint: false,
+        },
+      },
+      async (args: AddConsumedItemsInput) => {
+        return await this.addUserConsumedItems(args);
       }
     );
 
@@ -339,6 +372,7 @@ export class YazioMcpServer {
    - \`amount\`: Direct amount in base units (g or ml). If serving type is provided, use the amount of the serving type * serving_quantity. If serving type is not provided, use the amount of the base unit.
 
 **Important Notes**:
+- If the user lists several foods (e.g. "1 slice of bread, 1 tbsp butter and 1 slice of gouda"), do steps 1-4 for each food and log them together with \`add_user_consumed_items\`, one entry per food. Never log one combined product for foods the user listed separately.
 - Always search first if you don't have a product_id
 - Check product details to understand available serving types, base unit (g or ml) and amount in serving
 - The date should be in ISO format (YYYY-MM-DD)
@@ -670,6 +704,39 @@ Example:
     } catch (error) {
       throw new Error(`Failed to add consumed item: ${error}`);
     }
+  }
+
+  private async addUserConsumedItems(args: AddConsumedItemsInput) {
+    const client = await this.ensureAuthenticated();
+    const added: (AddConsumedItemsInput['items'][number] & { id: string })[] = [];
+    const failed: (AddConsumedItemsInput['items'][number] & { error: string })[] = [];
+
+    // One request per food, so each lands as its own diary entry. Keep going
+    // past a failure: the rest of the meal still belongs in the diary, and the
+    // report says exactly which foods to retry.
+    for (const item of args.items) {
+      const id = uuidv4();
+      try {
+        await client.user.addConsumedItem({ ...item, date: args.date, daytime: args.daytime, id });
+        added.push({ id, ...item });
+      } catch (error) {
+        failed.push({ ...item, error: String(error) });
+      }
+    }
+
+    const summary = failed.length === 0
+      ? `Added ${added.length} separate entries to ${args.daytime} on ${args.date}`
+      : `Added ${added.length} of ${args.items.length} entries to ${args.daytime} on ${args.date}. Check get_user_consumed_items before retrying the failed ones, so nothing is logged twice`;
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `${summary}:\n\n${JSON.stringify({ added, failed }, null, 2)}`,
+        },
+      ],
+      isError: failed.length > 0,
+    };
   }
 
   private async removeUserConsumedItem(args: RemoveConsumedItemInput) {

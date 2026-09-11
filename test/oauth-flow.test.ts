@@ -346,7 +346,7 @@ async function main(): Promise<void> {
       ? JSON.parse(listBody.split('data: ')[1].split('\n')[0])
       : JSON.parse(listBody);
     const toolNames: string[] = payload.result?.tools?.map((t: { name: string }) => t.name) ?? [];
-    check('exposes all 15 tools', toolNames.length === 15, toolNames.length);
+    check('exposes all 16 tools', toolNames.length === 16, toolNames.length);
     check('includes get_user', toolNames.includes('get_user'), toolNames);
     check('includes add_user_consumed_item', toolNames.includes('add_user_consumed_item'));
 

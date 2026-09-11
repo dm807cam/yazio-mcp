@@ -68,6 +68,14 @@ export const AddConsumedItemInputSchema = z.object({
   serving: ServingTypeSchema.optional(),
   serving_quantity: z.number().optional().describe('Quantity of servings')
 });
+export const AddConsumedItemsInputSchema = z.object({
+  date: DateStringSchema.describe('Date when the foods were consumed'),
+  daytime: DaytimeSchema.describe('Meal the foods belong to (breakfast, lunch, dinner, snack)'),
+  items: z
+    .array(AddConsumedItemInputSchema.omit({ date: true, daytime: true }))
+    .min(1)
+    .describe('One item per food; each becomes its own diary entry (bread, butter and gouda are three items)')
+});
 export const RemoveConsumedItemInputSchema = z.object({
   itemId: ItemIdSchema.describe('ID of the consumed item to remove')
 });
@@ -90,6 +98,7 @@ export type GetUserExercisesInput = z.infer<typeof GetUserExercisesInputSchema>;
 export type GetUserSettingsInput = z.infer<typeof GetUserSettingsInputSchema>;
 export type GetUserSuggestedProductsInput = z.infer<typeof GetUserSuggestedProductsInputSchema>;
 export type AddConsumedItemInput = z.infer<typeof AddConsumedItemInputSchema>;
+export type AddConsumedItemsInput = z.infer<typeof AddConsumedItemsInputSchema>;
 export type RemoveConsumedItemInput = z.infer<typeof RemoveConsumedItemInputSchema>;
 export type AddWaterIntakeInput = z.infer<typeof AddWaterIntakeInputSchema>;
 export type GetDietaryPreferencesInput = z.infer<typeof GetDietaryPreferencesInputSchema>;

@@ -29,6 +29,7 @@
     { "name": "search_products", "description": "Search food database" },
     { "name": "get_product", "description": "Get detailed product info" },
     { "name": "add_user_consumed_item", "description": "Add food to your log" },
+    { "name": "add_user_consumed_items", "description": "Add a meal's foods as separate entries" },
     { "name": "add_user_water_intake", "description": "Add water intake entry" },
     { "name": "remove_user_consumed_item", "description": "Remove food from log" }
   ],

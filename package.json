@@ -39,7 +39,7 @@
     "type-check": "tsc --noEmit",
     "version": "node scripts/bump-version.cjs && git add manifest.json server.json",
     "start:http": "node dist/http.js",
-    "test": "tsx test/oauth-flow.test.ts"
+    "test": "tsx test/oauth-flow.test.ts && tsx test/meal-logging.test.ts"
   },
   "keywords": [
     "mcp",
