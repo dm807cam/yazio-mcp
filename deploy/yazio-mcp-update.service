@@ -1,0 +1,23 @@
+[Unit]
+Description=Deploy the newest commit of the Yazio MCP connector
+Documentation=https://github.com/dm807cam/yazio-mcp
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=REPO_URL=https://github.com/dm807cam/yazio-mcp.git
+Environment=BRANCH=master
+ExecStart=/usr/local/lib/yazio-mcp/update.sh
+# The first run installs every dependency, which takes a while on a Pi.
+TimeoutStartSec=30min
+
+# Builds share the Pi with other services; stay out of their way.
+Nice=10
+IOSchedulingClass=idle
+
+# Root here only installs the bundle and restarts the service; the build runs
+# as yazio-mcp-build inside the same sandbox.
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full

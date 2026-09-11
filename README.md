@@ -132,6 +132,27 @@ the bundle root-owned to `/opt/yazio-mcp`, and enables the service bound to
 Edit `PUBLIC_URL` in `deploy/yazio-mcp.service` before installing if your hostname
 differs.
 
+#### Automatic updates
+
+`setup-autoupdate.sh` keeps the Pi on the newest commit of `master` (set `REPO_URL`
+and `BRANCH` in `deploy/yazio-mcp-update.service` for another repository):
+
+```bash
+rsync -a deploy/ pi:~/yazio-mcp-stage/
+ssh -t pi 'sudo bash ~/yazio-mcp-stage/setup-autoupdate.sh'
+```
+
+A timer checks the branch every 5 minutes. For a new commit it builds and runs
+`npm test` as the unprivileged `yazio-mcp-build` user (reinstalling dependencies
+only when `package-lock.json` changed), then installs the bundle and restarts the
+service only if the build output changed. If the service does not come back up, it
+rolls back and skips that commit until a newer one lands. Follow it with
+`journalctl -u yazio-mcp-update -f`.
+
+Each restart signs connected clients out, because Yazio sessions live in memory.
+A push updates the app only: changes to the updater or the systemd units take a
+manual re-run of the setup scripts, and the updater logs a note when they drift.
+
 ## 💡 Use Cases
 
 ![Showcase](https://github.com/user-attachments/assets/3aa47086-d40e-408c-ba51-cbe8cf165404)
